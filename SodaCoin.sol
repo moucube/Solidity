@@ -30,10 +30,17 @@ contract ERC20Interface {
     function allowance(address tokenOwner, address spender) public constant returns (uint remaining);
     function transfer(address to, uint tokens) public returns (bool success);
     function approve(address spender, uint tokens) public returns (bool success);
-    function transferFrom(address from, address to, uint tokens) public returns (bool success);
+    function checkRate() public constant returns (uint rate_);
 
     event Transfer(address indexed from, address indexed to, uint tokens);
     event Approval(address indexed tokenOwner, address indexed spender, uint tokens);
+    event Blacklisted(address indexed target);
+	event DeleteFromBlacklist(address indexed target);
+	event RejectedPaymentToBlacklistedAddr(address indexed from, address indexed to, uint value);
+	event RejectedPaymentFromBlacklistedAddr(address indexed from, address indexed to, uint value);
+	event RejectedPaymentFromLockedAddr(address indexed from, address indexed to, uint value, uint lackdatetime, uint now_);
+	event RejectedPaymentMaximunFromLockedAddr(address indexed from, address indexed to, uint value);
+	event test1(uint rate, uint a, uint now );
 }
 
 
@@ -84,11 +91,21 @@ contract SodaCoin is ERC20Interface, Owned, SafeMath {
     string public  name;
     uint8 public decimals;
     uint public _totalSupply;
+    uint public start;
+    address founderAddr = 0x625f7Ae05DC8c22dA56F47CaDc8c647137a6B4D9;
+    address advisorAddr = 0x45F6a7D7903D3A02bef15826eBCA44aB5eD11758;
 
     mapping(address => uint) balances;
     mapping(address => mapping(address => uint)) allowed;
+    mapping(address => int8) public blacklist;
+    UnlockDateModel[] public unlockdate;
 
-
+    struct UnlockDateModel {
+		//string date;
+		uint256 datetime;
+		uint rate;
+	}
+    
     // ------------------------------------------------------------------------
     // Constructor
     // ------------------------------------------------------------------------
@@ -97,10 +114,33 @@ contract SodaCoin is ERC20Interface, Owned, SafeMath {
         name = "SODA Coin";
         decimals = 18;
         _totalSupply = 2000000000000000000000000000;
-        balances[0xC713b7c600Bb0e70c2d4b466b923Cab1E45e7c76] = _totalSupply;
-        emit Transfer(address(0), 0xC713b7c600Bb0e70c2d4b466b923Cab1E45e7c76, _totalSupply);
+        balances[0x1E7A12b193D18027E33cd3Ff0eef2Af31cbBF9ef] = 1400000000000000000000000000;
+        emit Transfer(address(0), 0x1E7A12b193D18027E33cd3Ff0eef2Af31cbBF9ef, 1400000000000000000000000000); // owner wallet (70%) 1,400,000,000
+        // Founder & Team wallet (15%) 300,000,000
+        // Vesting over 2 years and 10 months (10% monthly release after 2 years)
+        balances[founderAddr] = 300000000000000000000000000;
+        emit Transfer(address(0), founderAddr, 300000000000000000000000000); 
+        // Advisor & Partner wallet (15%) 300,000,000
+        // Vesting over 2 years and 10 months (10% monthly release after 2 years)
+        balances[advisorAddr] = 300000000000000000000000000;
+        emit Transfer(address(0), advisorAddr, 300000000000000000000000000);
+        
+        start = now;
+        unlockdate.push(UnlockDateModel({datetime : 1610237400,rate : 10}));
+        unlockdate.push(UnlockDateModel({datetime : 1612915800,rate : 10}));
+        unlockdate.push(UnlockDateModel({datetime : 1615335000,rate : 10}));
+        unlockdate.push(UnlockDateModel({datetime : 1618013400,rate : 10}));
+        unlockdate.push(UnlockDateModel({datetime : 1620605400,rate : 10}));
+        unlockdate.push(UnlockDateModel({datetime : 1623283800,rate : 10}));
+        unlockdate.push(UnlockDateModel({datetime : 1625875800,rate : 10}));
+        unlockdate.push(UnlockDateModel({datetime : 1628554200,rate : 10}));
+        unlockdate.push(UnlockDateModel({datetime : 1631232600,rate : 10}));
+        unlockdate.push(UnlockDateModel({datetime : 1633824600,rate : 10}));
     }
-
+    
+    function now_() public constant returns (uint){
+        return now;
+    }
 
     // ------------------------------------------------------------------------
     // Total supply
@@ -117,19 +157,52 @@ contract SodaCoin is ERC20Interface, Owned, SafeMath {
         return balances[tokenOwner];
     }
 
-
+    function checkRate() public constant returns (uint rate_){
+        uint rate = 0;
+        for (uint i = 0; i<unlockdate.length; i++) {
+            if (unlockdate[i].datetime < now) {
+                rate = rate + unlockdate[i].rate; 
+            }
+        }
+        return rate;
+    }
+    
     // ------------------------------------------------------------------------
     // Transfer the balance from token owner's account to to account
     // - Owner's account must have sufficient balance to transfer
     // - 0 value transfers are allowed
     // ------------------------------------------------------------------------
+  
     function transfer(address to, uint tokens) public returns (bool success) {
-        balances[msg.sender] = safeSub(balances[msg.sender], tokens);
-        balances[to] = safeAdd(balances[to], tokens);
-        emit Transfer(msg.sender, to, tokens);
-        return true;
+        if (msg.sender == founderAddr || msg.sender == advisorAddr){
+            if (unlockdate[0].datetime > now) {
+                emit RejectedPaymentFromLockedAddr(msg.sender, to, tokens, unlockdate[0].datetime, now);
+			    return false;
+            } else {
+                uint rate = checkRate();
+                
+                uint maximum = 300000000000000000000000000 - (300000000000000000000000000 * 0.01) * rate;
+                if (maximum > (balances[msg.sender] - tokens)){
+                    emit RejectedPaymentMaximunFromLockedAddr(msg.sender, to, tokens);
+			        return false;
+                }
+            }
+        }
+        
+        if (blacklist[msg.sender] > 0) { // Accounts in the blacklist can not be withdrawn
+			emit RejectedPaymentFromBlacklistedAddr(msg.sender, to, tokens);
+			return false;
+		} else if (blacklist[to] > 0) { // Accounts in the blacklist can not be withdrawn
+			emit RejectedPaymentToBlacklistedAddr(msg.sender, to, tokens);
+			return false;
+		} else {
+			balances[msg.sender] = safeSub(balances[msg.sender], tokens);
+            balances[to] = safeAdd(balances[to], tokens);
+            emit Transfer(msg.sender, to, tokens);
+            return true;
+		}
+		
     }
-
 
     // ------------------------------------------------------------------------
     // Token owner can approve for spender to transferFrom(...) tokens
@@ -141,23 +214,6 @@ contract SodaCoin is ERC20Interface, Owned, SafeMath {
         return true;
     }
 
-
-    // ------------------------------------------------------------------------
-    // Transfer tokens from the from account to the to account
-    // 
-    // The calling account must already have sufficient tokens approve(...)-d
-    // for spending from the from account and
-    // - From account must have sufficient balance to transfer
-    // - Spender must have sufficient allowance to transfer
-    // - 0 value transfers are allowed
-    // ------------------------------------------------------------------------
-    function transferFrom(address from, address to, uint tokens) public returns (bool success) {
-        balances[from] = safeSub(balances[from], tokens);
-        allowed[from][msg.sender] = safeSub(allowed[from][msg.sender], tokens);
-        balances[to] = safeAdd(balances[to], tokens);
-        emit Transfer(from, to, tokens);
-        return true;
-    }
 
 
     // ------------------------------------------------------------------------
@@ -189,16 +245,36 @@ contract SodaCoin is ERC20Interface, Owned, SafeMath {
         revert();
     }
 
-
     // ------------------------------------------------------------------------
     // Owner can transfer out any accidentally sent ERC20 tokens
     // ------------------------------------------------------------------------
     function transferAnyERC20Token(address tokenAddress, uint tokens) public onlyOwner returns (bool success) {
         return ERC20Interface(tokenAddress).transfer(owner, tokens);
     }
-    // Increase issuance.
+    
+    // ------------------------------------------------------------------------
+    // Owner can add an increase total supply.
+    // ------------------------------------------------------------------------
 	function totalSupplyIncrease(uint256 _supply) public onlyOwner{
 		_totalSupply = _totalSupply + _supply;
 		balances[msg.sender] = balances[msg.sender] + _supply;
 	}
+	
+	// ------------------------------------------------------------------------
+    // Owner can add blacklist the wallet address.
+    // ------------------------------------------------------------------------
+	function blacklisting(address _addr) public onlyOwner{
+		blacklist[_addr] = 1;
+		emit Blacklisted(_addr);
+	}
+	
+	
+	// ------------------------------------------------------------------------
+    // Owner can delete from blacklist the wallet address.
+    // ------------------------------------------------------------------------
+	function deleteFromBlacklist(address _addr) public onlyOwner{
+		blacklist[_addr] = -1;
+		emit DeleteFromBlacklist(_addr);
+	}
+	
 }
